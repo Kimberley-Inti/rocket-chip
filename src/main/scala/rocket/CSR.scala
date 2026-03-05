@@ -287,6 +287,10 @@ class CSRFileIO(implicit p: Parameters) extends CoreBundle
   val mcontext = Output(UInt(coreParams.mcontextWidth.W))
   val scontext = Output(UInt(coreParams.scontextWidth.W))
 
+  //[Edited1]========================
+  val scbasereg = Output(UInt(xLen.W))
+  //=================================
+
   val vector = usingVector.option(new Bundle {
     val vconfig = new VConfig().asOutput
     val vstart = UInt(maxVLMax.log2.W).asOutput
@@ -475,6 +479,10 @@ class CSRFile(
   val reg_mtval = Reg(UInt(width = vaddrBitsExtended))
   val reg_mtval2 = Reg(UInt(((maxSVAddrBits + 1) min xLen).W))
   val reg_mscratch = Reg(Bits(width = xLen))
+  //[Edited 2]==========================
+  val reg_scbasereg = RegInit(0.U(xLen.W))
+  io.scbasereg := reg_scbasereg
+  //===================================
   val mtvecWidth = paddrBits min xLen
   val reg_mtvec = mtvecInit match {
     case Some(addr) => Reg(init=UInt(addr, mtvecWidth))
@@ -665,6 +673,10 @@ class CSRFile(
   read_mapping ++= context_csrs
   read_mapping ++= fp_csrs
   read_mapping ++= vector_csrs
+
+  //[Edited 3]==========================
+  read_mapping += 0x800 -> reg_scbasereg
+  //====================================
 
   if (coreParams.haveBasicCounters) {
     read_mapping += CSRs.mcountinhibit -> reg_mcountinhibit
@@ -1208,6 +1220,11 @@ class CSRFile(
     when (decoded_addr(CSRs.mie))      { reg_mie := wdata & supported_interrupts }
     when (decoded_addr(CSRs.mepc))     { reg_mepc := formEPC(wdata) }
     when (decoded_addr(CSRs.mscratch)) { reg_mscratch := wdata }
+
+    //[Edited 4]===============================================
+    when (decoded_addr(0x800))         {reg_scbasereg := wdata}
+    //=========================================================
+
     if (mtvecWritable)
       when (decoded_addr(CSRs.mtvec))  { reg_mtvec := wdata }
     when (decoded_addr(CSRs.mcause))   { reg_mcause := wdata & UInt((BigInt(1) << (xLen-1)) + (BigInt(1) << whichInterrupt.getWidth) - 1) }
