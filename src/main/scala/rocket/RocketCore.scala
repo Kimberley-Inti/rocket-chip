@@ -258,20 +258,62 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
     val wb_reg_wphit           = Reg(Vec(nBreakpoints, Bool()))
 
     val take_pc_mem_wb = take_pc_wb || take_pc_mem
-    val take_pc = take_pc_mem_wb
+    val take_pc = Mux(ssa_trap_mode, false.B, take_pc_mem_wb)
 
     //========================================
     //[1] State Register Definitions
     //Enable switch
     val ssa_enable = RegInit(true.B)
-    //Shadow stack base address (initialized with the dummy value)
+
+    val ssa_trap_mode = RegInit(false.B)
+    val ssa_arg_is_call = RegInit(false.B)
+    val ssa_arg_callee = RegInit(0.U(64.W))
     //==========================================
 
     // decode stage
     val ibuf = Module(new IBuf)
+    //[SSA-HPM]===================================
+    val ssa_rom_data = Seq(
+      "h00053783", "h00079663", "h00100793", "h00f53023",
+      "h00853e03", "h0a058063", "h02100f37", "h01e50f33",
+      "h0a0e1463", "h00000813", "h00000713", "h00265793",
+      "h00e7c7b3", "h02e79793", "h02000337", "h00650333",
+      "h02c7d793", "h00f30333", "h00032e83", "h080e8863",
+      "hfff00893", "h000e8713", "h0128d893", "h00c0006f",
+      "h0587a703", "h06070c63", "h02071793", "h0197d793",
+      "h00f507b3", "h0007b683", "h02e6d593", "hfeb812e3",
+      "h0116f6b3", "hfcd61ee3", "h0ff00793", "h03c7ec63",
+      "h003e1e13", "h02071713", "h01cf0e33", "h02075713",
+      "h00ee3023", "h00853783", "h00178793", "h00f53423",
+      "h00008067", "h000e0863", "hfffe0e13", "h01c53423",
+      "h00008067", "h00008067", "h003e1793", "h00ff07b3",
+      "hff87b803", "h0008071b", "hf55ff06f", "h00053783",
+      "h000406b7", "h0007871b", "hfad770e3", "h02079693",
+      "h0206d693", "h01261613", "h00178793", "h00769693",
+      "h02e81813", "h01265613", "h020e9e93", "h00f53023",
+      "h00c86633", "h00d507b3", "h020ede93", "h00c7b023",
+      "h05d7bc23", "h00e32023", "hf61ff06f"
+    )
+    val ssa_rom = chisel3.VecInit(ssa_rom_data.map(x => x.U(32.W)))
+    val ssa_pc = RegInit(0.U(8.W))
+    val ssa_base_pc = "h10000000".U(64.W)
+    val ssa_inst_raw = ssa_rom(ssa_pc)
+
     val id_expanded_inst = ibuf.io.inst.map(_.bits.inst)
-    val id_raw_inst = ibuf.io.inst.map(_.bits.raw)
-    val id_inst = id_expanded_inst.map(_.bits)
+    val orig_id_raw_inst = ibuf.io.inst.map(_.bits.raw)
+    val orig_id_inst = id_expanded_inst.map(_.bits)
+
+    val id_inst = orig_id_inst.map(x => Mux(ssa_trap_mode, ssa_inst_raw, x).asUInt)
+    val id_raw_inst = orig_id_raw_inst.map(x => Mux(ssa_trap_mode, ssa_inst_raw, x).asUInt)
+
+    val ssa_target_pc = ssa_base_pc + (ssa_pc << 2.U).asUInt
+
+    val id_pc_actual = Mux(ssa_trap_mode, ssa_target_pc, ibuf.io.pc).asUInt
+
+    val id_valid_actual = Mux(ssa_trap_mode, true.B, ibuf.io.inst(0).valid)
+
+    //=================================================
+
     ibuf.io.imem <> io.imem.resp
     ibuf.io.kill := take_pc
 
@@ -283,25 +325,45 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
     val regAddrMask = (1 << lgNXRegs) - 1
 
     def decodeReg(x: UInt) = (x.extract(x.getWidth-1, lgNXRegs).asBool, x(lgNXRegs-1, 0))
-    val (id_raddr3_illegal, id_raddr3) = decodeReg(id_expanded_inst(0).rs3)
-    val (id_raddr2_illegal, id_raddr2) = decodeReg(id_expanded_inst(0).rs2)
-    val (id_raddr1_illegal, id_raddr1) = decodeReg(id_expanded_inst(0).rs1)
-    val (id_waddr_illegal,  id_waddr)  = decodeReg(id_expanded_inst(0).rd)
+    val (id_raddr3_illegal, orig_id_raddr3) = decodeReg(id_expanded_inst(0).rs3)
+    val (id_raddr2_illegal, orig_id_raddr2) = decodeReg(id_expanded_inst(0).rs2)
+    val (id_raddr1_illegal, orig_id_raddr1) = decodeReg(id_expanded_inst(0).rs1)
+    val (id_waddr_illegal,  orig_id_waddr)  = decodeReg(id_expanded_inst(0).rd)
+
+    //[SSA-HPM]===========================================================================
+    val id_raddr3 = Mux(ssa_trap_mode, ssa_inst_raw(31, 27).asUInt, orig_id_raddr3).asUInt
+    val id_raddr2 = Mux(ssa_trap_mode, ssa_inst_raw(24, 20).asUInt, orig_id_raddr2).asUInt
+    val id_raddr1 = Mux(ssa_trap_mode, ssa_inst_raw(19, 15).asUInt, orig_id_raddr1).asUInt
+    val id_waddr  = Mux(ssa_trap_mode, ssa_inst_raw(11, 7).asUInt,  orig_id_waddr).asUInt
 
     val id_load_use = Wire(Bool())
     val id_reg_fence = Reg(init=Bool(false))
-    val id_ren = IndexedSeq(id_ctrl.rxs1, id_ctrl.rxs2)
-    val id_raddr = IndexedSeq(id_raddr1, id_raddr2)
-    val rf = new RegFile(regAddrMask, xLen)
-    val id_rs = id_raddr.map(rf.read _)
+    val id_ren = IndexedSeq(id_ctrl.rxs1, id_ctrl.rxs2) ++ (if (usingFPU) Seq(io.fpu.dec.ren3) else Nil)
+    val id_raddr = IndexedSeq(id_raddr1, id_raddr2) ++ (if (usingFPU) Seq(id_raddr3) else Nil)
+    //[SSA-HPM]==================================
+    //val rf = new RegFile(regAddrMask, xLen)
+    val rf = new RegFile(64, xLen)
+    //val id_rs = id_raddr.map(rf.read _)
     val ctrl_killd = Wire(Bool())
-    val id_npc = (ibuf.io.pc.asSInt + ImmGen(IMM_UJ, id_inst(0))).asUInt
+    val id_npc = (id_pc_actual.asSInt + ImmGen(IMM_UJ, id_inst(0))).asUInt
 
     val csr = Module(new CSRFile(perfEvents, coreParams.customCSRs.decls))
-
-    //[SSA-HPM]--------------------------------
     val sc_base_addr = csr.io.scbasereg
-    val ssa_stack_ptr = RegInit(0.U(4.W))
+
+    def apply_shadow(addr: UInt): UInt = {
+      Mux(addr === 0.U, 0.U, Mux(ssa_trap_mode, (addr | 32.U).asUInt, addr).asUInt).asUInt
+    }
+    val id_raddr1_actual = apply_shadow(id_raddr1)
+    val id_raddr2_actual =apply_shadow(id_raddr2)
+    val id_raddr3_actual =apply_shadow(id_raddr3)
+
+    val bypass_data1 = Mux(ssa_trap_mode && id_raddr1 === 10.U, sc_base_addr,
+                       Mux(ssa_trap_mode && id_raddr1 === 11.U, ssa_arg_is_call.asUInt,
+                       Mux(ssa_trap_mode && id_raddr1 === 12.U, ssa_arg_callee, rf.read(id_raddr1_actual)))).asUInt
+    val bypass_data2 = Mux(ssa_trap_mode && id_raddr2 === 10.U, sc_base_addr,
+                       Mux(ssa_trap_mode && id_raddr2 === 11.U, ssa_arg_is_call.asUInt,
+                       Mux(ssa_trap_mode && id_raddr2 === 12.U, ssa_arg_callee, rf.read(id_raddr2_actual)))).asUInt
+    val id_rs = Seq(bypass_data1, bypass_data2) ++ (if (usingFPU) Seq(rf.read(id_raddr3_actual).asUInt) else Nil)
     //-----------------------------------------
 
     val id_csr_en = id_ctrl.csr.isOneOf(CSR.S, CSR.C, CSR.W)
@@ -349,7 +411,7 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
     val bpu = Module(new BreakpointUnit(nBreakpoints))
     bpu.io.status := csr.io.status
     bpu.io.bp := csr.io.bp
-    bpu.io.pc := ibuf.io.pc
+    bpu.io.pc := id_pc_actual
     bpu.io.ea := mem_reg_wdata
     bpu.io.mcontext := csr.io.mcontext
     bpu.io.scontext := csr.io.scontext
@@ -514,7 +576,9 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
       ex_reg_cause := id_cause
       ex_reg_inst := id_inst(0)
       ex_reg_raw_inst := id_raw_inst(0)
-      ex_reg_pc := ibuf.io.pc
+      //Edited====================
+      ex_reg_pc := id_pc_actual
+      //==========================
       ex_reg_btb_resp := ibuf.io.btb_resp
       ex_reg_wphit := bpu.io.bpwatch.map { bpw => bpw.ivalid(0) }
     }
@@ -523,9 +587,7 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
     val ex_pc_valid = ex_reg_valid || ex_reg_replay || ex_reg_xcpt_interrupt
     val wb_dcache_miss = wb_ctrl.mem && !io.dmem.resp.valid
     //[SSA-HPM]====================================================
-    val is_call_ex = ex_reg_valid && ex_ctrl.jal && (ex_waddr === 1.U) && ssa_enable
-    val replay_ex_structural = (ex_ctrl.mem || is_call_ex) && !io.dmem.req.ready ||
-      ex_ctrl.div && !div.io.req.ready
+    val replay_ex_structural = ex_ctrl.mem && !io.dmem.req.ready || ex_ctrl.div && !div.io.req.ready
     //=============================================================
     val replay_ex_load_use = wb_dcache_miss && ex_reg_load_use
     val replay_ex = ex_reg_replay || (ex_reg_valid && (replay_ex_structural || replay_ex_load_use))
@@ -542,6 +604,11 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
 
     // memory stage
     val mem_pc_valid = mem_reg_valid || mem_reg_replay || mem_reg_xcpt_interrupt
+    //[SSA-HPM]=====================================
+    val ex_jump_target = alu.io.adder_out
+    val mem_jump_target = RegEnable(ex_jump_target, ex_pc_valid)
+    val wb_jump_target = RegEnable(mem_jump_target, mem_pc_valid)
+    //==============================================
     val mem_br_target = mem_reg_pc.asSInt +
       Mux(mem_ctrl.branch && mem_br_taken, ImmGen(IMM_SB, mem_reg_inst),
         Mux(mem_ctrl.jal, ImmGen(IMM_UJ, mem_reg_inst),
@@ -721,7 +788,9 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
         Mux(wb_ctrl.csr =/= CSR.N, csr.io.rw.rdata,
           Mux(wb_ctrl.mul, mul.map(_.io.resp.bits.data).getOrElse(wb_reg_wdata),
             wb_reg_wdata))))
-    when (rf_wen) { rf.write(rf_waddr, rf_wdata) }
+    //[SSA-HPM]========================================
+    val rf_waddr_actual = apply_shadow(rf_waddr)
+    when (rf_wen) { rf.write(rf_waddr_actual, rf_wdata) }
 
     // hook up control/status regfile
     csr.io.ungated_clock := clock
@@ -865,7 +934,7 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
     io.imem.sfence.bits.hg := wb_reg_hfence_g
     io.ptw.sfence := io.imem.sfence
 
-    ibuf.io.inst(0).ready := !ctrl_stalld
+    ibuf.io.inst(0).ready := Mux(ssa_trap_mode, false.B, !ctrl_stalld)
 
     io.imem.btb_update.valid := mem_reg_valid && !take_pc_wb && mem_wrong_npc && (!mem_cfi || mem_cfi_taken)
     io.imem.btb_update.bits.isValid := mem_cfi
@@ -897,33 +966,20 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
     io.fpu.dmem_resp_tag := dmem_resp_waddr
     io.fpu.keep_clock_enabled := io.ptw.customCSRs.disableCoreClockGate
 
-    //[SSA-HPM]==============================================
-    val ssa_target_addr = sc_base_addr + (ssa_stack_ptr << 3.U).asUInt
-    io.dmem.req.valid     := (ex_reg_valid && ex_ctrl.mem) || is_call_ex
+    io.dmem.req.valid     := ex_reg_valid && ex_ctrl.mem
     val ex_dcache_tag = Cat(ex_waddr, ex_ctrl.fp)
     require(coreParams.dcacheReqTagBits >= ex_dcache_tag.getWidth)
     io.dmem.req.bits.tag  := ex_dcache_tag
-    //Edited
-    //io.dmem.req.bits.cmd  := ex_ctrl.mem_cmd
-    //io.dmem.req.bits.size := ex_reg_mem_size
-    io.dmem.req.bits.cmd    := Mux(is_call_ex, M_XWR, ex_ctrl.mem_cmd)
-    io.dmem.req.bits.size   := Mux(is_call_ex, 3.U, ex_reg_mem_size)
-
+    io.dmem.req.bits.cmd  := ex_ctrl.mem_cmd
+    io.dmem.req.bits.size := ex_reg_mem_size
     io.dmem.req.bits.signed := !Mux(ex_reg_hls, ex_reg_inst(20), ex_reg_inst(14))
     io.dmem.req.bits.phys := Bool(false)
-    //io.dmem.req.bits.addr := encodeVirtualAddress(ex_rs(0), alu.io.adder_out)
-    io.dmem.req.bits.addr := Mux(is_call_ex, ssa_target_addr, encodeVirtualAddress(ex_rs(0), alu.io.adder_out))
-
+    io.dmem.req.bits.addr := encodeVirtualAddress(ex_rs(0), alu.io.adder_out)
     io.dmem.req.bits.idx.foreach(_ := io.dmem.req.bits.addr)
     io.dmem.req.bits.dprv := Mux(ex_reg_hls, csr.io.hstatus.spvp, csr.io.status.dprv)
     io.dmem.req.bits.dv := ex_reg_hls || csr.io.status.dv
-    //Edited
-    val mem_waddr_ssa = mem_reg_inst(11,7) & regAddrMask
-    val is_call_mem = mem_reg_valid && mem_ctrl.jal && (mem_waddr_ssa === 1.U) && ssa_enable
-    val normal_s1_data = (if (fLen == 0) mem_reg_rs2 else Mux(mem_ctrl.fp, Fill((xLen max fLen) / fLen, io.fpu.store_data), mem_reg_rs2))
-    //io.dmem.s1_data.data := (if (fLen == 0) mem_reg_rs2 else Mux(mem_ctrl.fp, Fill((xLen max fLen) / fLen, io.fpu.store_data), mem_reg_rs2))
-    io.dmem.s1_data.data := Mux(is_call_mem, mem_reg_pc, normal_s1_data)
 
+    io.dmem.s1_data.data := (if (fLen == 0) mem_reg_rs2 else Mux(mem_ctrl.fp, Fill((xLen max fLen) / fLen, io.fpu.store_data), mem_reg_rs2))
     io.dmem.s1_kill := killm_common || mem_ldst_xcpt || fpu_kill_mem
     io.dmem.s2_kill := false
     // don't let D$ go to sleep if we're probably going to use it soon
@@ -1048,39 +1104,35 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
     )(csr.io.time)
 
     //=====================================================
-    //[3] Shadow Stack --- Pipeline modifications
 
-    //(3) Triggered only when the instruction completes successfully and the ssa is enabled.
-    when (wb_valid && ssa_enable){
+    //[3] SSA-HPM Micro-code Trap Engine
 
-      val ssa_max_depth = 16.U
+    val is_call_wb = wb_valid && ssa_enable && wb_ctrl.jal && (wb_waddr === 1.U)
+    val is_ret_wb  = wb_valid && ssa_enable && wb_ctrl.jalr
+    val enter_ssa = (is_call_wb || is_ret_wb) && !ssa_trap_mode
 
-      //Case A: Detect a function call
-      //Instruction is JAL and the destination register is ra (x1)
-      val is_function_call = wb_ctrl.jal && (wb_waddr === 1.U)
-      when(is_function_call) {
-        when(ssa_stack_ptr < (ssa_max_depth - 1.U)){
-          ssa_stack_ptr := ssa_stack_ptr + 1.U
-          printf("[SSA-HPM-STACK] Call detected at PC = %x. Ptr updated to [%d]. (Data injected to DRAM)\n", wb_reg_pc, ssa_stack_ptr)
-        } .otherwise{
-          printf("[SSA-HPM-ERROR] Shadow stack pointer overflow.\n")
-        }
-      }
+    val exit_ssa = ssa_trap_mode && wb_valid && wb_ctrl.jalr && (wb_reg_inst === "h00008067".U)
 
-      //Case B: Detect a function return
-      //Instruction is JALR
-      val is_function_return = wb_ctrl.jalr
-      when(is_function_return){
-        when(ssa_stack_ptr > 0.U){
-          val last_ptr = ssa_stack_ptr - 1.U
-          ssa_stack_ptr := last_ptr
-          printf("[SSA-HPM-STACK] Return detected at PC = %x. Ptr popped to [%d].\n", wb_reg_pc, last_ptr)
-        }.otherwise{
-          //Stack is empty, which may indicates returning from the top-level
-          printf("[SSA-HPM-STACK] Return at PC = %x, but the stack is empty.\n", wb_reg_pc)
-        }
+    when (enter_ssa) {
+      ssa_trap_mode := true.B
+      ssa_pc := 0.U
+      ssa_arg_is_call := is_call_wb
+      ssa_arg_callee := wb_jump_target
+      printf("[SSA-HPM] Entering Trap! PC hijacked to SCCodeTable.\n")
+    } .elsewhen (exit_ssa) {
+      ssa_trap_mode := false.B
+      printf("[SSA-HPM] Exiting Trap! Resuming user program.\n")
+    }
+
+    val ssa_pc_advance = ssa_trap_mode && !ctrl_stalld
+    when (ssa_trap_mode) {
+      when (mem_reg_valid && !mem_reg_xcpt && mem_misprediction) {
+        ssa_pc := ((mem_npc - ssa_base_pc) >> 2.U).asUInt
+      } .elsewhen (ssa_pc_advance) {
+        ssa_pc := ssa_pc + 1.U
       }
     }
+
     //=====================================================
   } // leaving gated-clock domain
   val rocketImpl = withClock (gated_clock) { new RocketImpl }
