@@ -257,9 +257,6 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
     val take_pc_wb = Wire(Bool())
     val wb_reg_wphit           = Reg(Vec(nBreakpoints, Bool()))
 
-    val take_pc_mem_wb = take_pc_wb || take_pc_mem
-    val take_pc = Mux(ssa_trap_mode, false.B, take_pc_mem_wb)
-
     //========================================
     //[1] State Register Definitions
     //Enable switch
@@ -269,6 +266,9 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
     val ssa_arg_is_call = RegInit(false.B)
     val ssa_arg_callee = RegInit(0.U(64.W))
     //==========================================
+
+    val take_pc_mem_wb = take_pc_wb || take_pc_mem
+    val take_pc = Mux(ssa_trap_mode, false.B, take_pc_mem_wb)
 
     // decode stage
     val ibuf = Module(new IBuf)
