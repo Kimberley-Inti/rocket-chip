@@ -518,7 +518,7 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
 
     when (!ctrl_killd) {
       ex_ctrl := id_ctrl
-      ex_reg_rvc := ibuf.io.inst(0).bits.rvc
+      ex_reg_rvc := Mux(ssa_trap_mode, false.B, ibuf.io.inst(0).bits.rvc)
       ex_ctrl.csr := id_csr
       ex_scie_unpipelined := id_ctrl.scie && id_scie_decoder.unpipelined
       ex_scie_pipelined := id_ctrl.scie && id_scie_decoder.pipelined
@@ -1107,8 +1107,8 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
 
     //[3] SSA-HPM Micro-code Trap Engine
 
-    val is_call_wb = wb_valid && ssa_enable && wb_ctrl.jal && (wb_waddr === 1.U)
-    val is_ret_wb  = wb_valid && ssa_enable && wb_ctrl.jalr
+    val is_call_wb = wb_valid && ssa_enable && wb_ctrl.jal && (wb_waddr === 1.U) && (sc_base_addr =/= 0.U)
+    val is_ret_wb  = wb_valid && ssa_enable && wb_ctrl.jalr && (sc_base_addr =/= 0.U)
     val enter_ssa = (is_call_wb || is_ret_wb) && !ssa_trap_mode
 
     val exit_ssa = ssa_trap_mode && wb_valid && wb_ctrl.jalr && (wb_reg_inst === "h00008067".U)
@@ -1124,12 +1124,19 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
       printf("[SSA-HPM] Exiting Trap! Resuming user program.\n")
     }
 
-    val ssa_pc_advance = ssa_trap_mode && !ctrl_stalld
+    val ssa_rom_limit = (ssa_rom_data.length.U - 1.U)
+    val ssa_pc_advance = ssa_trap_mode && !ctrl_stalld && (ssa_pc < ssa_rom_limit)
     when (ssa_trap_mode) {
       when (mem_reg_valid && !mem_reg_xcpt && mem_misprediction) {
-        ssa_pc := ((mem_npc - ssa_base_pc) >> 2.U).asUInt
+        val target_idx = ((mem_npc - ssa_base_pc) >> 2.U).asUInt
+        when(target_idx < ssa_rom_limit) {
+          ssa_pc := target_idx
+        }
       } .elsewhen (ssa_pc_advance) {
         ssa_pc := ssa_pc + 1.U
+      } .elsewhen (ssa_trap_mode && ssa_pc === ssa_rom_limit) {
+        ssa_trap_mode := false.B
+        printf("[SSA-HPM-ERROR] Microcode out of bounds! Forcing exit.\n")
       }
     }
 
