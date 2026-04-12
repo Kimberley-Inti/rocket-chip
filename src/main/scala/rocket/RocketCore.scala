@@ -276,32 +276,36 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
     //==========================================
 
     val take_pc_mem_wb = take_pc_wb || take_pc_mem
-    val take_pc = Mux(ssa_trap_mode && !exit_ssa, false.B, take_pc_mem_wb)
+    val take_pc = take_pc_mem_wb
 
     // decode stage
     val ibuf = Module(new IBuf)
     //[SSA-HPM]===================================
     val ssa_rom_data = Seq(
-      "h00053783", "h00079663", "h00100793", "h00f53023",
-      "h00853e03", "h0a058063", "h02100f37", "h01e50f33",
-      "h0a0e1463", "h00000813", "h00000713", "h00265793",
-      "h00e7c7b3", "h02e79793", "h02000337", "h00650333",
-      "h02c7d793", "h00f30333", "h00032e83", "h080e8863",
-      "hfff00893", "h000e8713", "h0128d893", "h00c0006f",
-      "h0587a703", "h06070c63", "h02071793", "h0197d793",
-      "h00f507b3", "h0007b683", "h02e6d593", "hfeb812e3",
-      "h0116f6b3", "hfcd61ee3", "h0ff00793", "h03c7ec63",
-      "h003e1e13", "h02071713", "h01cf0e33", "h02075713",
-      "h00ee3023", "h00853783", "h00178793", "h00f53423",
-      "h00008067", "h000e0863", "hfffe0e13", "h01c53423",
-      "h00008067", "h00008067", "h003e1793", "h00ff07b3",
-      "hff87b803", "h0008071b", "hf55ff06f", "h00053783",
-      "h000406b7", "h0007871b", "hfad770e3", "h02079693",
-      "h0206d693", "h01261613", "h00178793", "h00769693",
-      "h02e81813", "h01265613", "h020e9e93", "h00f53023",
-      "h00c86633", "h00d507b3", "h020ede93", "h00c7b023",
-      "h05d7bc23", "h00e32023", "hf61ff06f", "h00008067",
-      "h00008067", "h00008067"
+      "h80002573", "h0a058463", "hb00022f3",
+      "hb0202373", "hff050393", "h0003be03",
+      "h0083be83", "h00000f13", "h000e0863",
+      "h005e1f93", "h41f38fb3", "h000fbf03",
+      "h00265f93", "h01ff4fb3", "h3ff00f13",
+      "h01efffb3", "hffffff37", "hdf0f0f1b",
+      "h01e50f33", "h002f9f93", "h01ff0fb3",
+      "h000faf03", "h020f1a63", "h000e8f13",
+      "h001e8e93", "h01d3b423", "h01efa023",
+      "hffff7fb7", "hdf0f8f9b", "h01f50fb3",
+      "h007f1693", "h00df8fb3", "h00cfb023",
+      "h000fb823", "h000fbc23", "h001e0e13",
+      "h01c3b023", "h005e1f93", "h41f38fb3",
+      "h01efb023", "h005fb423", "h006fb823",
+      "h0680006f", "hb00022f3", "hb0202373",
+      "hff050393", "h0003be03", "h040e0a63",
+      "h005e1f93", "h41f38fb3", "h000fbf03",
+      "h008fbe83", "h010fb683", "h41d28eb3",
+      "h40d306b3", "hffff72b7", "hdf02829b",
+      "h005502b3", "h007f1313", "h006282b3",
+      "h0102b303", "h01d30333", "h0062b823",
+      "h0182b303", "h00d30333", "h0062bc23",
+      "hfffe0e13", "h01c3b023", "h00060067",
+
     )
     val ssa_rom = chisel3.VecInit(ssa_rom_data.map(x => x.U(32.W)))
     val ssa_pc = RegInit(0.U(8.W))
@@ -625,7 +629,7 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
         Mux(mem_ctrl.jal, ImmGen(IMM_UJ, mem_reg_inst),
           Mux(mem_reg_rvc, SInt(2), SInt(4))))
     val mem_npc_base = (Mux(mem_ctrl.jalr || mem_reg_sfence, encodeVirtualAddress(mem_reg_wdata, mem_reg_wdata).asSInt, mem_br_target) & SInt(-2)).asUInt
-    val mem_npc = Mux(ssa_trap_mode && mem_reg_inst === "h00008067".U, ssa_arg_callee, mem_npc_base)
+    val mem_npc = Mux(ssa_trap_mode && mem_reg_inst === "h00060067".U, ssa_arg_callee, mem_npc_base)
     val mem_wrong_npc =
       Mux(ex_pc_valid, mem_npc =/= ex_reg_pc,
         Mux(ibuf.io.inst(0).valid || ibuf.io.imem.valid, mem_npc =/= ibuf.io.pc, Bool(true)))
@@ -923,9 +927,9 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
         csr.io.csr_stall ||
         id_reg_pause ||
         io.traceStall
-    ctrl_killd := !ibuf.io.inst(0).valid || ibuf.io.inst(0).bits.replay || take_pc_mem_wb || ctrl_stalld || csr.io.interrupt
+    ctrl_killd := !id_valid_actual || Mux(ssa_trap_mode, false.B, ibuf.io.inst(0).bits.replay) || take_pc_mem_wb || ctrl_stalld || csr.io.interrupt
 
-    io.imem.req.valid := take_pc
+    io.imem.req.valid := take_pc && (!ssa_trap_mode || exit_ssa) && !enter_ssa
     io.imem.req.bits.speculative := !take_pc_wb
     io.imem.req.bits.pc :=
       Mux(exit_ssa, ssa_arg_callee, Mux(wb_xcpt || csr.io.eret, csr.io.evec, // exception or [m|s]ret
@@ -1119,17 +1123,17 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
 
     // [3] SSA-HPM Micro-code Trap Engine (The Global Perfect Fix)
 
-    val is_call_wb = wb_valid && ssa_enable && wb_ctrl.jal && (wb_waddr === 1.U) && (sc_base_addr =/= 0.U)
-    val is_ret_wb  = wb_valid && ssa_enable && wb_ctrl.jalr && (sc_base_addr =/= 0.U)
+    val is_call_wb = wb_valid && ssa_enable && (wb_ctrl.jal || wb_ctrl.jalr) && (wb_waddr === 1.U || wb_waddr === 5.U) && (sc_base_addr =/= 0.U)
+    val is_ret_wb  = wb_valid && ssa_enable && wb_ctrl.jalr && (wb_waddr === 0.U) && (sc_base_addr =/= 0.U)
 
     val wb_target_pc = RegEnable(mem_npc, mem_pc_valid)
 
     val ssa_watchdog = RegInit(0.U(16.W))
     val ssa_rom_limit = ssa_rom_data.length.U - 1.U
 
-    val normal_exit = ssa_trap_mode && wb_valid && wb_ctrl.jalr && (wb_reg_inst === "h00008067".U)
-    val ssa_timeout = ssa_trap_mode && (ssa_watchdog > 500.U)
-    val ssa_is_ret_mem = mem_reg_inst === "h00008067".U
+    val normal_exit = ssa_trap_mode && wb_valid && wb_ctrl.jalr && (wb_reg_inst === "h00060067".U)
+    val ssa_timeout = ssa_trap_mode && (ssa_watchdog > 5000.U)
+    val ssa_is_ret_mem = mem_reg_inst === "h00060067".U
     val ssa_oob     = ssa_trap_mode && mem_reg_valid && !mem_reg_xcpt && mem_misprediction && !ssa_is_ret_mem && (((mem_npc - ssa_base_pc) >> 2.U).asUInt > ssa_rom_limit)
 
     enter_ssa := (is_call_wb || is_ret_wb) && !ssa_trap_mode
@@ -1156,7 +1160,7 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
       } .otherwise {
         printf("[SSA-HPM] Exiting Trap! Normal return.\n")
       }
-    } .elsewhen (ssa_trap_mode) {
+    } .elsewhen (ssa_trap_mode && !ctrl_stalld) {
       ssa_watchdog := ssa_watchdog + 1.U
     }
 
@@ -1166,11 +1170,11 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
       when (wb_waddr === 12.U) { ssa_x12_written := true.B }
     }
 
-    val ssa_pc_advance = ssa_trap_mode && !ctrl_stalld && (ssa_pc < ssa_rom_limit)
+    val ssa_pc_advance = ssa_trap_mode && !ctrl_stalld && (ssa_pc < ssa_rom_limit) && !take_pc_mem_wb
 
     when (ssa_trap_mode && !exit_ssa) {
-      when (mem_reg_valid && !mem_reg_xcpt && mem_misprediction && !ssa_is_ret_mem) {
-        val target_idx = ((mem_npc - ssa_base_pc) >> 2.U).asUInt
+      when (take_pc_mem_wb) {
+        val target_idx = ((io.imem.req.bits.pc - ssa_base_pc) >> 2.U).asUInt
         when(target_idx <= ssa_rom_limit) {
           ssa_pc := target_idx
         }
