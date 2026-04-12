@@ -265,10 +265,18 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
     val ssa_trap_mode = RegInit(false.B)
     val ssa_arg_is_call = RegInit(false.B)
     val ssa_arg_callee = RegInit(0.U(64.W))
+
+    val ssa_x10_written = RegInit(false.B)
+    val ssa_x11_written = RegInit(false.B)
+    val ssa_x12_written = RegInit(false.B)
+
+    val enter_ssa = Wire(init = false.B)
+    val exit_ssa = Wire(init = false.B)
+    val ssa_force_flush = enter_ssa || exit_ssa
     //==========================================
 
     val take_pc_mem_wb = take_pc_wb || take_pc_mem
-    val take_pc = Mux(ssa_trap_mode, false.B, take_pc_mem_wb)
+    val take_pc = Mux(ssa_trap_mode && !exit_ssa, false.B, take_pc_mem_wb)
 
     // decode stage
     val ibuf = Module(new IBuf)
@@ -292,7 +300,8 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
       "h0206d693", "h01261613", "h00178793", "h00769693",
       "h02e81813", "h01265613", "h020e9e93", "h00f53023",
       "h00c86633", "h00d507b3", "h020ede93", "h00c7b023",
-      "h05d7bc23", "h00e32023", "hf61ff06f"
+      "h05d7bc23", "h00e32023", "hf61ff06f", "h00008067",
+      "h00008067", "h00008067"
     )
     val ssa_rom = chisel3.VecInit(ssa_rom_data.map(x => x.U(32.W)))
     val ssa_pc = RegInit(0.U(8.W))
@@ -357,12 +366,14 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
     val id_raddr2_actual =apply_shadow(id_raddr2)
     val id_raddr3_actual =apply_shadow(id_raddr3)
 
-    val bypass_data1 = Mux(ssa_trap_mode && id_raddr1 === 10.U, sc_base_addr,
-                       Mux(ssa_trap_mode && id_raddr1 === 11.U, ssa_arg_is_call.asUInt,
-                       Mux(ssa_trap_mode && id_raddr1 === 12.U, ssa_arg_callee, rf.read(id_raddr1_actual)))).asUInt
-    val bypass_data2 = Mux(ssa_trap_mode && id_raddr2 === 10.U, sc_base_addr,
-                       Mux(ssa_trap_mode && id_raddr2 === 11.U, ssa_arg_is_call.asUInt,
-                       Mux(ssa_trap_mode && id_raddr2 === 12.U, ssa_arg_callee, rf.read(id_raddr2_actual)))).asUInt
+    val bypass_data1 = Mux(ssa_trap_mode && id_raddr1 === 10.U && !ssa_x10_written, sc_base_addr,
+                       Mux(ssa_trap_mode && id_raddr1 === 11.U && !ssa_x11_written, ssa_arg_is_call.asUInt,
+                       Mux(ssa_trap_mode && id_raddr1 === 12.U && !ssa_x12_written, ssa_arg_callee, rf.read(id_raddr1_actual)))).asUInt
+
+    val bypass_data2 = Mux(ssa_trap_mode && id_raddr2 === 10.U && !ssa_x10_written, sc_base_addr,
+                       Mux(ssa_trap_mode && id_raddr2 === 11.U && !ssa_x11_written, ssa_arg_is_call.asUInt,
+                       Mux(ssa_trap_mode && id_raddr2 === 12.U && !ssa_x12_written, ssa_arg_callee, rf.read(id_raddr2_actual)))).asUInt
+
     val id_rs = Seq(bypass_data1, bypass_data2) ++ (if (usingFPU) Seq(rf.read(id_raddr3_actual).asUInt) else Nil)
     //-----------------------------------------
 
@@ -613,7 +624,8 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
       Mux(mem_ctrl.branch && mem_br_taken, ImmGen(IMM_SB, mem_reg_inst),
         Mux(mem_ctrl.jal, ImmGen(IMM_UJ, mem_reg_inst),
           Mux(mem_reg_rvc, SInt(2), SInt(4))))
-    val mem_npc = (Mux(mem_ctrl.jalr || mem_reg_sfence, encodeVirtualAddress(mem_reg_wdata, mem_reg_wdata).asSInt, mem_br_target) & SInt(-2)).asUInt
+    val mem_npc_base = (Mux(mem_ctrl.jalr || mem_reg_sfence, encodeVirtualAddress(mem_reg_wdata, mem_reg_wdata).asSInt, mem_br_target) & SInt(-2)).asUInt
+    val mem_npc = Mux(ssa_trap_mode && mem_reg_inst === "h00008067".U, ssa_arg_callee, mem_npc_base)
     val mem_wrong_npc =
       Mux(ex_pc_valid, mem_npc =/= ex_reg_pc,
         Mux(ibuf.io.inst(0).valid || ibuf.io.imem.valid, mem_npc =/= ibuf.io.pc, Bool(true)))
@@ -749,7 +761,7 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
     val replay_wb_common = io.dmem.s2_nack || wb_reg_replay
     val replay_wb_rocc = wb_reg_valid && wb_ctrl.rocc && !io.rocc.cmd.ready
     val replay_wb = replay_wb_common || replay_wb_rocc
-    take_pc_wb := replay_wb || wb_xcpt || csr.io.eret || wb_reg_flush_pipe
+    take_pc_wb := replay_wb || wb_xcpt || csr.io.eret || wb_reg_flush_pipe || ssa_force_flush
 
     // writeback arbitration
     val dmem_resp_xpu = !io.dmem.resp.bits.tag(0).asBool
@@ -916,9 +928,9 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
     io.imem.req.valid := take_pc
     io.imem.req.bits.speculative := !take_pc_wb
     io.imem.req.bits.pc :=
-      Mux(wb_xcpt || csr.io.eret, csr.io.evec, // exception or [m|s]ret
+      Mux(exit_ssa, ssa_arg_callee, Mux(wb_xcpt || csr.io.eret, csr.io.evec, // exception or [m|s]ret
         Mux(replay_wb,              wb_reg_pc,   // replay
-          mem_npc))    // flush or branch misprediction
+          mem_npc)))    // flush or branch misprediction
     io.imem.flush_icache := wb_reg_valid && wb_ctrl.fence_i && !io.dmem.s2_nack
     io.imem.might_request := {
       imem_might_request_reg := ex_pc_valid || mem_pc_valid || io.ptw.customCSRs.disableICacheClockGate
@@ -1103,40 +1115,67 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
       docstring = "Kill the emulation after INT rdtime cycles. Off if 0."
     )(csr.io.time)
 
-    //=====================================================
+    // =====================================================
 
-    //[3] SSA-HPM Micro-code Trap Engine
+    // [3] SSA-HPM Micro-code Trap Engine (The Global Perfect Fix)
 
     val is_call_wb = wb_valid && ssa_enable && wb_ctrl.jal && (wb_waddr === 1.U) && (sc_base_addr =/= 0.U)
     val is_ret_wb  = wb_valid && ssa_enable && wb_ctrl.jalr && (sc_base_addr =/= 0.U)
-    val enter_ssa = (is_call_wb || is_ret_wb) && !ssa_trap_mode
 
-    val exit_ssa = ssa_trap_mode && wb_valid && wb_ctrl.jalr && (wb_reg_inst === "h00008067".U)
+    val wb_target_pc = RegEnable(mem_npc, mem_pc_valid)
+
+    val ssa_watchdog = RegInit(0.U(16.W))
+    val ssa_rom_limit = ssa_rom_data.length.U - 1.U
+
+    val normal_exit = ssa_trap_mode && wb_valid && wb_ctrl.jalr && (wb_reg_inst === "h00008067".U)
+    val ssa_timeout = ssa_trap_mode && (ssa_watchdog > 500.U)
+    val ssa_is_ret_mem = mem_reg_inst === "h00008067".U
+    val ssa_oob     = ssa_trap_mode && mem_reg_valid && !mem_reg_xcpt && mem_misprediction && !ssa_is_ret_mem && (((mem_npc - ssa_base_pc) >> 2.U).asUInt > ssa_rom_limit)
+
+    enter_ssa := (is_call_wb || is_ret_wb) && !ssa_trap_mode
+    exit_ssa := normal_exit || ssa_timeout || ssa_oob
 
     when (enter_ssa) {
       ssa_trap_mode := true.B
       ssa_pc := 0.U
+      ssa_watchdog := 0.U
       ssa_arg_is_call := is_call_wb
-      ssa_arg_callee := wb_jump_target
+
+      ssa_arg_callee := wb_target_pc
+
+      ssa_x10_written := false.B
+      ssa_x11_written := false.B
+      ssa_x12_written := false.B
       printf("[SSA-HPM] Entering Trap! PC hijacked to SCCodeTable.\n")
     } .elsewhen (exit_ssa) {
       ssa_trap_mode := false.B
-      printf("[SSA-HPM] Exiting Trap! Resuming user program.\n")
+      when (ssa_timeout) {
+        printf("[SSA-HPM] ERROR: Watchdog Timeout! Forcing flush and resuming C program.\n")
+      } .elsewhen (ssa_oob) {
+        printf("[SSA-HPM] ERROR: Microcode out of bounds! Forcing flush and resuming C program.\n")
+      } .otherwise {
+        printf("[SSA-HPM] Exiting Trap! Normal return.\n")
+      }
+    } .elsewhen (ssa_trap_mode) {
+      ssa_watchdog := ssa_watchdog + 1.U
     }
 
-    val ssa_rom_limit = (ssa_rom_data.length.U - 1.U)
+    when (ssa_trap_mode && wb_wen) {
+      when (wb_waddr === 10.U) { ssa_x10_written := true.B }
+      when (wb_waddr === 11.U) { ssa_x11_written := true.B }
+      when (wb_waddr === 12.U) { ssa_x12_written := true.B }
+    }
+
     val ssa_pc_advance = ssa_trap_mode && !ctrl_stalld && (ssa_pc < ssa_rom_limit)
-    when (ssa_trap_mode) {
-      when (mem_reg_valid && !mem_reg_xcpt && mem_misprediction) {
+
+    when (ssa_trap_mode && !exit_ssa) {
+      when (mem_reg_valid && !mem_reg_xcpt && mem_misprediction && !ssa_is_ret_mem) {
         val target_idx = ((mem_npc - ssa_base_pc) >> 2.U).asUInt
-        when(target_idx < ssa_rom_limit) {
+        when(target_idx <= ssa_rom_limit) {
           ssa_pc := target_idx
         }
       } .elsewhen (ssa_pc_advance) {
         ssa_pc := ssa_pc + 1.U
-      } .elsewhen (ssa_trap_mode && ssa_pc === ssa_rom_limit) {
-        ssa_trap_mode := false.B
-        printf("[SSA-HPM-ERROR] Microcode out of bounds! Forcing exit.\n")
       }
     }
 
