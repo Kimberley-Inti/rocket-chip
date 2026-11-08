@@ -282,29 +282,74 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
     val ibuf = Module(new IBuf)
     //[SSA-HPM]===================================
     val ssa_rom_data = Seq(
-      "h80002573", "h0a058463", "hb00022f3",
-      "hb0202373", "hff050393", "h0003be03",
-      "h0083be83", "h00000f13", "h000e0863",
-      "h005e1f93", "h41f38fb3", "h000fbf03",
-      "h00265f93", "h01ff4fb3", "h3ff00f13",
-      "h01efffb3", "hffffff37", "hdf0f0f1b",
-      "h01e50f33", "h002f9f93", "h01ff0fb3",
-      "h000faf03", "h020f1a63", "h000e8f13",
-      "h001e8e93", "h01d3b423", "h01efa023",
-      "hffff7fb7", "hdf0f8f9b", "h01f50fb3",
-      "h007f1693", "h00df8fb3", "h00cfb023",
-      "h000fb823", "h000fbc23", "h001e0e13",
-      "h01c3b023", "h005e1f93", "h41f38fb3",
-      "h01efb023", "h005fb423", "h006fb823",
-      "h0680006f", "hb00022f3", "hb0202373",
-      "hff050393", "h0003be03", "h040e0a63",
-      "h005e1f93", "h41f38fb3", "h000fbf03",
-      "h008fbe83", "h010fb683", "h41d28eb3",
-      "h40d306b3", "hffff72b7", "hdf02829b",
-      "h005502b3", "h007f1313", "h006282b3",
-      "h0102b303", "h01d30333", "h0062b823",
-      "h0182b303", "h00d30333", "h0062bc23",
-      "hfffe0e13", "h01c3b023", "h00060067",
+      "h0a058463",
+      "hb00022f3",
+      "hb0202373",
+      "hff050393",
+      "h0003be03",
+      "h0083be83",
+      "h00000f13",
+      "h000e0863",
+      "h005e1f93",
+      "h41f38fb3",
+      "h000fbf03",
+      "h00265f93",
+      "h01ff4fb3",
+      "h3ff00f13",
+      "h01efffb3",
+      "hffffff37",
+      "hdf0f0f1b",
+      "h01e50f33",
+      "h002f9f93",
+      "h01ff0fb3",
+      "h000faf03",
+      "h020f1a63",
+      "h000e8f13",
+      "h001e8e93",
+      "h01d3b423",
+      "h01efa023",
+      "hffff7fb7",
+      "hdf0f8f9b",
+      "h01f50fb3",
+      "h007f1693",
+      "h00df8fb3",
+      "h00cfb023",
+      "h000fb823",
+      "h000fbc23",
+      "h001e0e13",
+      "h01c3b023",
+      "h005e1f93",
+      "h41f38fb3",
+      "h01efb023",
+      "h005fb423",
+      "h006fb823",
+      "h06000463",
+      "hb00022f3",
+      "hb0202373",
+      "hff050393",
+      "h0003be03",
+      "h040e0a63",
+      "h005e1f93",
+      "h41f38fb3",
+      "h000fbf03",
+      "h008fbe83",
+      "h010fb683",
+      "h41d28eb3",
+      "h40d306b3",
+      "hffff72b7",
+      "hdf02829b",
+      "h005502b3",
+      "h007f1313",
+      "h006282b3",
+      "h0102b303",
+      "h01d30333",
+      "h0062b823",
+      "h0182b303",
+      "h00d30333",
+      "h0062bc23",
+      "hfffe0e13",
+      "h01c3b023",
+      "h00060067",
 
     )
     val ssa_rom = chisel3.VecInit(ssa_rom_data.map(x => x.U(32.W)))
@@ -433,7 +478,7 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
 
     val id_xcpt0 = ibuf.io.inst(0).bits.xcpt0
     val id_xcpt1 = ibuf.io.inst(0).bits.xcpt1
-    val (id_xcpt, id_cause) = checkExceptions(List(
+    val (orig_id_xcpt, orig_id_cause) = checkExceptions(List(
       (csr.io.interrupt, csr.io.interrupt_cause),
       (bpu.io.debug_if,  UInt(CSR.debugTriggerCause)),
       (bpu.io.xcpt_if,   UInt(Causes.breakpoint)),
@@ -445,6 +490,9 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
       (id_xcpt1.ae.inst, UInt(Causes.fetch_access)),
       (id_virtual_insn,  UInt(Causes.virtual_instruction)),
       (id_illegal_insn,  UInt(Causes.illegal_instruction))))
+
+    val id_xcpt = Mux(ssa_trap_mode, false.B, orig_id_xcpt)
+    val id_cause = Mux(ssa_trap_mode, 0.U, orig_id_cause)
 
     val idCoverCauses = List(
       (CSR.debugTriggerCause, "DEBUG_TRIGGER"),
@@ -527,7 +575,7 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
     }
 
     ex_reg_valid := !ctrl_killd
-    ex_reg_replay := !take_pc && ibuf.io.inst(0).valid && ibuf.io.inst(0).bits.replay
+    ex_reg_replay := !take_pc && Mux(ssa_trap_mode, false.B, ibuf.io.inst(0).valid && ibuf.io.inst(0).bits.replay)
     ex_reg_xcpt := !ctrl_killd && id_xcpt
     ex_reg_xcpt_interrupt := !take_pc && ibuf.io.inst(0).valid && csr.io.interrupt
 
@@ -1170,17 +1218,56 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
       when (wb_waddr === 12.U) { ssa_x12_written := true.B }
     }
 
+    // 精确记录每条指令在流水线中的位置
+    val id_ssa_pc = ssa_pc
+    val ex_ssa_pc = RegEnable(id_ssa_pc, !ctrl_stalld)
+    val mem_ssa_pc = RegEnable(ex_ssa_pc, !ctrl_stalld)
+    val wb_ssa_pc = RegEnable(mem_ssa_pc, !ctrl_stalld)
+
     val ssa_pc_advance = ssa_trap_mode && !ctrl_stalld && (ssa_pc < ssa_rom_limit) && !take_pc_mem_wb
 
     when (ssa_trap_mode && !exit_ssa) {
-      when (take_pc_mem_wb) {
-        val target_idx = ((io.imem.req.bits.pc - ssa_base_pc) >> 2.U).asUInt
-        when(target_idx <= ssa_rom_limit) {
-          ssa_pc := target_idx
+      // 1. WB 阶段的真异常或结构性重放 (增加 wb_reg_valid 过滤幽灵 NACK)
+      when (take_pc_wb && wb_reg_valid) {
+        ssa_pc := wb_ssa_pc
+      } .elsewhen (take_pc_mem) {
+        val opcode = mem_reg_inst(6, 0)
+        val is_branch = (opcode === "b1100011".U)
+        val is_load   = (opcode === "b0000011".U)
+        val is_store  = (opcode === "b0100011".U)
+        val is_mem_op = is_load || is_store
+
+        when (is_branch && mem_cfi_taken) {
+          // 真正的分支跳转：拆解偏移量
+          val b_imm = Cat(Fill(20, mem_reg_inst(31)), mem_reg_inst(7), mem_reg_inst(30,25), mem_reg_inst(11,8), 0.U(1.W)).asSInt
+          val target_idx = (mem_ssa_pc.asSInt + (b_imm >> 2).asSInt).asUInt
+          when(target_idx <= ssa_rom_limit) {
+            ssa_pc := target_idx
+          }
+        } .elsewhen (is_branch && !mem_cfi_taken) {
+          ssa_pc := mem_ssa_pc + 1.U
+        } .elsewhen (is_mem_op) {
+          // 【核心修复】：只有真正访问内存的 Load/Store 遇到 D-Cache NACK 时，才原地保持 PC 等待重放！
+          ssa_pc := mem_ssa_pc
+        } .otherwise {
+          // 【终极放行】：对于 JALR (退出指令) 等其他指令，放它前进！
+          ssa_pc := mem_ssa_pc + 1.U
         }
       } .elsewhen (ssa_pc_advance) {
         ssa_pc := ssa_pc + 1.U
       }
+    }
+
+    // 【硬件 X光机：必须放在引擎的最底部】
+    when (ssa_trap_mode && !exit_ssa) {
+      // 打印：看门狗计数、微码PC指针、当前正在执行的微码指令机器码、流水线是否停顿(等内存)
+      printf("[SSA-HW-TRACE] Watchdog: %d, ssa_pc: %d, Inst: %x, Stall: %b, BaseReg(a0): %x\n",
+        ssa_watchdog,
+        ssa_pc,
+        mem_reg_inst,
+        ctrl_stalld,
+        sc_base_addr
+      )
     }
 
     //=====================================================
