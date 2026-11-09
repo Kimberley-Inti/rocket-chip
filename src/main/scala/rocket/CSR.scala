@@ -289,6 +289,7 @@ class CSRFileIO(implicit p: Parameters) extends CoreBundle
 
   //[Edited1]========================
   val scbasereg = Output(UInt(xLen.W))
+  val ssa_context_active = Output(Bool())
   //=================================
 
   val vector = usingVector.option(new Bundle {
@@ -482,6 +483,11 @@ class CSRFile(
   //[Edited 2]==========================
   val reg_scbasereg = RegInit(0.U(xLen.W))
   io.scbasereg := reg_scbasereg
+  // Every architectural trap suspends application call-context updates. Keep
+  // this per hart, independently of whether a pool is currently enabled.
+  val reg_ssa_trap_depth = RegInit(0.U(8.W))
+  val reg_ssa_trap_overflow = RegInit(false.B)
+  io.ssa_context_active := !reg_ssa_trap_depth.orR && !reg_ssa_trap_overflow
   //===================================
   val mtvecWidth = paddrBits min xLen
   val reg_mtvec = mtvecInit match {
@@ -676,6 +682,8 @@ class CSRFile(
 
   //[Edited 3]==========================
   read_mapping += 0x800 -> reg_scbasereg
+  // Custom user read-only CSR: depth[7:0], sticky fail-closed overflow[8].
+  read_mapping += 0xcc0 -> Cat(reg_ssa_trap_overflow, reg_ssa_trap_depth)
   //====================================
 
   if (coreParams.haveBasicCounters) {
@@ -966,6 +974,16 @@ class CSRFile(
   io.gstatus.sd_rv32 := xLen == 32 && io.gstatus.sd
 
   val exception = insn_call || insn_break || io.exception
+  // io.eret also denotes ECALL/EBREAK redirects; only insn_ret unwinds.
+  when (exception) {
+    when (reg_ssa_trap_depth.andR) {
+      reg_ssa_trap_overflow := true.B
+    } .otherwise {
+      reg_ssa_trap_depth := reg_ssa_trap_depth + 1.U
+    }
+  } .elsewhen (insn_ret && reg_ssa_trap_depth.orR) {
+    reg_ssa_trap_depth := reg_ssa_trap_depth - 1.U
+  }
   assert(PopCount(insn_ret :: insn_call :: insn_break :: io.exception :: Nil) <= 1, "these conditions must be mutually exclusive")
 
   when (insn_wfi && !io.singleStep && !reg_debug) { reg_wfi := true }

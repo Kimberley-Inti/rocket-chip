@@ -63,3 +63,22 @@ the next issues. Branch/CSR redirects use the actual pipeline PC. Private
 branches do not train frontend prediction. Late integer writes retain the
 issuing register bank across monitor entry. There is no watchdog success
 fallback that silently discards profiling work.
+
+## Trap isolation (stage2-trap-isolation)
+
+Application call/return notifications pause while an architectural trap is
+active. CSRFile tracks trap entry independently of SCBaseReg and resumes on the
+outermost matching xRET. This uses the actual internal trap/return decodes:
+`io.eret` also signals ECALL/EBREAK redirects and is not a return-only signal.
+The per-hart custom user read-only CSR `0xcc0` exposes depth in bits 7:0 and
+sticky overflow in bit 8; higher bits read zero. Depth saturates at 255. A further
+entry latches fail-closed inhibition until reset, even after the depth unwinds;
+any still-open profile must be discarded as incomplete. A return at zero depth
+does not underflow. Writes to this read-only CSR are illegal instructions.
+
+The memory ABI and ROM are unchanged. Counters retain interval-inclusive
+semantics, including instructions/time spent in intervening handlers; this is
+not application-only counter filtering. Only handler-induced call-tree updates
+are suppressed. Normal M-mode ECALL/MRET and timer IRQ are the tested target;
+S/VS delegation, debug/NMI protocols, Linux lifecycle, nonlocal unwinds and
+recovery from private-microcode faults require separate integration/validation.

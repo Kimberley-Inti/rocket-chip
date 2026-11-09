@@ -1220,8 +1220,8 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
 
     // SSA-HPM: retire-triggered calls/returns and serialized SCCodeTable execution.
 
-    val is_call_wb = wb_valid && ssa_enable && (wb_ctrl.jal || wb_ctrl.jalr) && (wb_waddr === 1.U || wb_waddr === 5.U) && (sc_base_addr =/= 0.U)
-    val is_ret_wb  = wb_valid && ssa_enable && wb_ctrl.jalr && (wb_waddr === 0.U) && (wb_reg_inst(19,15) === 1.U || wb_reg_inst(19,15) === 5.U) && wb_reg_inst(31,20) === 0.U && (sc_base_addr =/= 0.U)
+    val is_call_wb = wb_valid && ssa_enable && csr.io.ssa_context_active && (wb_ctrl.jal || wb_ctrl.jalr) && (wb_waddr === 1.U || wb_waddr === 5.U) && (sc_base_addr =/= 0.U)
+    val is_ret_wb  = wb_valid && ssa_enable && csr.io.ssa_context_active && wb_ctrl.jalr && (wb_waddr === 0.U) && (wb_reg_inst(19,15) === 1.U || wb_reg_inst(19,15) === 5.U) && wb_reg_inst(31,20) === 0.U && (sc_base_addr =/= 0.U)
 
     val wb_target_pc = RegEnable(mem_npc, mem_pc_valid)
 
