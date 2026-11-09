@@ -263,36 +263,133 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
     val ssa_enable = RegInit(true.B)
 
     val ssa_trap_mode = RegInit(false.B)
+    // One injected instruction in flight; replay keeps its ROM address.
+    val ssa_busy = RegInit(false.B)
+    val ssa_load_pending = RegInit(false.B)
+    val ssa_load_rd = Reg(UInt(5.W))
     val ssa_arg_is_call = RegInit(false.B)
     val ssa_arg_callee = RegInit(0.U(64.W))
+
+    val ssa_x10_written = RegInit(false.B)
+    val ssa_x11_written = RegInit(false.B)
+    val ssa_x12_written = RegInit(false.B)
+
+    val enter_ssa = Wire(init = false.B)
+    val exit_ssa = Wire(init = false.B)
+    val ssa_force_flush = enter_ssa || exit_ssa
     //==========================================
 
     val take_pc_mem_wb = take_pc_wb || take_pc_mem
-    val take_pc = Mux(ssa_trap_mode, false.B, take_pc_mem_wb)
+    val take_pc = take_pc_mem_wb
 
     // decode stage
     val ibuf = Module(new IBuf)
     //[SSA-HPM]===================================
     val ssa_rom_data = Seq(
-      "h00053783", "h00079663", "h00100793", "h00f53023",
-      "h00853e03", "h0a058063", "h02100f37", "h01e50f33",
-      "h0a0e1463", "h00000813", "h00000713", "h00265793",
-      "h00e7c7b3", "h02e79793", "h02000337", "h00650333",
-      "h02c7d793", "h00f30333", "h00032e83", "h080e8863",
-      "hfff00893", "h000e8713", "h0128d893", "h00c0006f",
-      "h0587a703", "h06070c63", "h02071793", "h0197d793",
-      "h00f507b3", "h0007b683", "h02e6d593", "hfeb812e3",
-      "h0116f6b3", "hfcd61ee3", "h0ff00793", "h03c7ec63",
-      "h003e1e13", "h02071713", "h01cf0e33", "h02075713",
-      "h00ee3023", "h00853783", "h00178793", "h00f53423",
-      "h00008067", "h000e0863", "hfffe0e13", "h01c53423",
-      "h00008067", "h00008067", "h003e1793", "h00ff07b3",
-      "hff87b803", "h0008071b", "hf55ff06f", "h00053783",
-      "h000406b7", "h0007871b", "hfad770e3", "h02079693",
-      "h0206d693", "h01261613", "h00178793", "h00769693",
-      "h02e81813", "h01265613", "h020e9e93", "h00f53023",
-      "h00c86633", "h00d507b3", "h020ede93", "h00c7b023",
-      "h05d7bc23", "h00e32023", "hf61ff06f"
+      "hfc050393",
+      "h0003be03",
+      "h0103be83",
+      "h10058463",
+      "h0e0e9c63",
+      "h10000293",
+      "h0e5e7863",
+      "h00000693",
+      "h000e0863",
+      "h006e1293",
+      "h405382b3",
+      "h0002b683",
+      "h00165293",
+      "h00d2c2b3",
+      "h00040337",
+      "hfff3031b",
+      "h0062f2b3",
+      "h00229293",
+      "hffefc337",
+      "hfc03031b",
+      "h00650333",
+      "h00530733",
+      "h00076f03",
+      "hfdc007b7",
+      "h00f507b3",
+      "h020f0263",
+      "h007f1293",
+      "h00578fb3",
+      "h000fb283",
+      "h00c29663",
+      "h008fb283",
+      "h04d28463",
+      "h058fbf03",
+      "hfe1ff06f",
+      "h0083bf03",
+      "h000402b7",
+      "h065f7663",
+      "h001f0293",
+      "h0053b423",
+      "h007f1293",
+      "h00578fb3",
+      "h00cfb023",
+      "h00dfb423",
+      "h000fb823",
+      "h000fbc23",
+      "h020fb023",
+      "h00076283",
+      "h045fbc23",
+      "h01e72023",
+      "h001e0e13",
+      "h01c3b023",
+      "h006e1293",
+      "h40538fb3",
+      "h01efb023",
+      "hb00022f3",
+      "hb0202373",
+      "h0200c6b7",
+      "hff86869b",
+      "h0006b683",
+      "h005fb423",
+      "h006fb823",
+      "h00dfbc23",
+      "h0a40006f",
+      "h0183b283",
+      "h00128293",
+      "h0053bc23",
+      "h001e8e93",
+      "h01d3b823",
+      "h08c0006f",
+      "h000e8863",
+      "hfffe8e93",
+      "h01d3b823",
+      "h07c0006f",
+      "h060e0c63",
+      "hb00022f3",
+      "hb0202373",
+      "h0200c6b7",
+      "hff86869b",
+      "h0006b683",
+      "h006e1f93",
+      "h41f38fb3",
+      "h000fbf03",
+      "h008fbe83",
+      "h41d282b3",
+      "h010fbe83",
+      "h41d30333",
+      "h018fbe83",
+      "h41d686b3",
+      "hfdc00fb7",
+      "h01f50fb3",
+      "h007f1f13",
+      "h01ef8fb3",
+      "h010fbe83",
+      "h005e8eb3",
+      "h01dfb823",
+      "h018fbe83",
+      "h006e8eb3",
+      "h01dfbc23",
+      "h020fbe83",
+      "h00de8eb3",
+      "h03dfb023",
+      "hfffe0e13",
+      "h01c3b023",
+      "h00060067"
     )
     val ssa_rom = chisel3.VecInit(ssa_rom_data.map(x => x.U(32.W)))
     val ssa_pc = RegInit(0.U(8.W))
@@ -310,7 +407,7 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
 
     val id_pc_actual = Mux(ssa_trap_mode, ssa_target_pc, ibuf.io.pc).asUInt
 
-    val id_valid_actual = Mux(ssa_trap_mode, true.B, ibuf.io.inst(0).valid)
+    val id_valid_actual = Mux(ssa_trap_mode, !ssa_busy, ibuf.io.inst(0).valid)
 
     //=================================================
 
@@ -349,6 +446,7 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
 
     val csr = Module(new CSRFile(perfEvents, coreParams.customCSRs.decls))
     val sc_base_addr = csr.io.scbasereg
+    val core_interrupt = csr.io.interrupt && !ssa_trap_mode
 
     def apply_shadow(addr: UInt): UInt = {
       Mux(addr === 0.U, 0.U, Mux(ssa_trap_mode, (addr | 32.U).asUInt, addr).asUInt).asUInt
@@ -357,18 +455,20 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
     val id_raddr2_actual =apply_shadow(id_raddr2)
     val id_raddr3_actual =apply_shadow(id_raddr3)
 
-    val bypass_data1 = Mux(ssa_trap_mode && id_raddr1 === 10.U, sc_base_addr,
-                       Mux(ssa_trap_mode && id_raddr1 === 11.U, ssa_arg_is_call.asUInt,
-                       Mux(ssa_trap_mode && id_raddr1 === 12.U, ssa_arg_callee, rf.read(id_raddr1_actual)))).asUInt
-    val bypass_data2 = Mux(ssa_trap_mode && id_raddr2 === 10.U, sc_base_addr,
-                       Mux(ssa_trap_mode && id_raddr2 === 11.U, ssa_arg_is_call.asUInt,
-                       Mux(ssa_trap_mode && id_raddr2 === 12.U, ssa_arg_callee, rf.read(id_raddr2_actual)))).asUInt
+    val bypass_data1 = Mux(ssa_trap_mode && id_raddr1 === 10.U && !ssa_x10_written, sc_base_addr,
+                       Mux(ssa_trap_mode && id_raddr1 === 11.U && !ssa_x11_written, ssa_arg_is_call.asUInt,
+                       Mux(ssa_trap_mode && id_raddr1 === 12.U && !ssa_x12_written, ssa_arg_callee, rf.read(id_raddr1_actual)))).asUInt
+
+    val bypass_data2 = Mux(ssa_trap_mode && id_raddr2 === 10.U && !ssa_x10_written, sc_base_addr,
+                       Mux(ssa_trap_mode && id_raddr2 === 11.U && !ssa_x11_written, ssa_arg_is_call.asUInt,
+                       Mux(ssa_trap_mode && id_raddr2 === 12.U && !ssa_x12_written, ssa_arg_callee, rf.read(id_raddr2_actual)))).asUInt
+
     val id_rs = Seq(bypass_data1, bypass_data2) ++ (if (usingFPU) Seq(rf.read(id_raddr3_actual).asUInt) else Nil)
     //-----------------------------------------
 
     val id_csr_en = id_ctrl.csr.isOneOf(CSR.S, CSR.C, CSR.W)
     val id_system_insn = id_ctrl.csr === CSR.I
-    val id_csr_ren = id_ctrl.csr.isOneOf(CSR.S, CSR.C) && id_expanded_inst(0).rs1 === UInt(0)
+    val id_csr_ren = id_ctrl.csr.isOneOf(CSR.S, CSR.C) && id_raddr1 === UInt(0)
     val id_csr = Mux(id_system_insn && id_ctrl.mem, CSR.N, Mux(id_csr_ren, CSR.R, id_ctrl.csr))
     val id_csr_flush = id_system_insn || (id_csr_en && !id_csr_ren && csr.io.decode(0).write_flush)
 
@@ -418,8 +518,8 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
 
     val id_xcpt0 = ibuf.io.inst(0).bits.xcpt0
     val id_xcpt1 = ibuf.io.inst(0).bits.xcpt1
-    val (id_xcpt, id_cause) = checkExceptions(List(
-      (csr.io.interrupt, csr.io.interrupt_cause),
+    val (orig_id_xcpt, orig_id_cause) = checkExceptions(List(
+      (core_interrupt, csr.io.interrupt_cause),
       (bpu.io.debug_if,  UInt(CSR.debugTriggerCause)),
       (bpu.io.xcpt_if,   UInt(Causes.breakpoint)),
       (id_xcpt0.pf.inst, UInt(Causes.fetch_page_fault)),
@@ -430,6 +530,9 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
       (id_xcpt1.ae.inst, UInt(Causes.fetch_access)),
       (id_virtual_insn,  UInt(Causes.virtual_instruction)),
       (id_illegal_insn,  UInt(Causes.illegal_instruction))))
+
+    val id_xcpt = Mux(ssa_trap_mode, false.B, orig_id_xcpt)
+    val id_cause = Mux(ssa_trap_mode, 0.U, orig_id_cause)
 
     val idCoverCauses = List(
       (CSR.debugTriggerCause, "DEBUG_TRIGGER"),
@@ -512,13 +615,13 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
     }
 
     ex_reg_valid := !ctrl_killd
-    ex_reg_replay := !take_pc && ibuf.io.inst(0).valid && ibuf.io.inst(0).bits.replay
+    ex_reg_replay := !take_pc && Mux(ssa_trap_mode, false.B, ibuf.io.inst(0).valid && ibuf.io.inst(0).bits.replay)
     ex_reg_xcpt := !ctrl_killd && id_xcpt
-    ex_reg_xcpt_interrupt := !take_pc && ibuf.io.inst(0).valid && csr.io.interrupt
+    ex_reg_xcpt_interrupt := !take_pc && ibuf.io.inst(0).valid && core_interrupt
 
     when (!ctrl_killd) {
       ex_ctrl := id_ctrl
-      ex_reg_rvc := ibuf.io.inst(0).bits.rvc
+      ex_reg_rvc := Mux(ssa_trap_mode, false.B, ibuf.io.inst(0).bits.rvc)
       ex_ctrl.csr := id_csr
       ex_scie_unpipelined := id_ctrl.scie && id_scie_decoder.unpipelined
       ex_scie_pipelined := id_ctrl.scie && id_scie_decoder.pipelined
@@ -572,7 +675,7 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
         ex_reg_rs_msb(0) := inst >> log2Ceil(bypass_sources.size)
       }
     }
-    when (!ctrl_killd || csr.io.interrupt || ibuf.io.inst(0).bits.replay) {
+    when (!ctrl_killd || core_interrupt || ibuf.io.inst(0).bits.replay) {
       ex_reg_cause := id_cause
       ex_reg_inst := id_inst(0)
       ex_reg_raw_inst := id_raw_inst(0)
@@ -613,7 +716,8 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
       Mux(mem_ctrl.branch && mem_br_taken, ImmGen(IMM_SB, mem_reg_inst),
         Mux(mem_ctrl.jal, ImmGen(IMM_UJ, mem_reg_inst),
           Mux(mem_reg_rvc, SInt(2), SInt(4))))
-    val mem_npc = (Mux(mem_ctrl.jalr || mem_reg_sfence, encodeVirtualAddress(mem_reg_wdata, mem_reg_wdata).asSInt, mem_br_target) & SInt(-2)).asUInt
+    val mem_npc_base = (Mux(mem_ctrl.jalr || mem_reg_sfence, encodeVirtualAddress(mem_reg_wdata, mem_reg_wdata).asSInt, mem_br_target) & SInt(-2)).asUInt
+    val mem_npc = Mux(ssa_trap_mode && mem_reg_inst === "h00060067".U, ssa_arg_callee, mem_npc_base)
     val mem_wrong_npc =
       Mux(ex_pc_valid, mem_npc =/= ex_reg_pc,
         Mux(ibuf.io.inst(0).valid || ibuf.io.imem.valid, mem_npc =/= ibuf.io.pc, Bool(true)))
@@ -749,7 +853,7 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
     val replay_wb_common = io.dmem.s2_nack || wb_reg_replay
     val replay_wb_rocc = wb_reg_valid && wb_ctrl.rocc && !io.rocc.cmd.ready
     val replay_wb = replay_wb_common || replay_wb_rocc
-    take_pc_wb := replay_wb || wb_xcpt || csr.io.eret || wb_reg_flush_pipe
+    take_pc_wb := replay_wb || wb_xcpt || csr.io.eret || wb_reg_flush_pipe || ssa_force_flush
 
     // writeback arbitration
     val dmem_resp_xpu = !io.dmem.resp.bits.tag(0).asBool
@@ -789,7 +893,16 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
           Mux(wb_ctrl.mul, mul.map(_.io.resp.bits.data).getOrElse(wb_reg_wdata),
             wb_reg_wdata))))
     //[SSA-HPM]========================================
-    val rf_waddr_actual = apply_shadow(rf_waddr)
+    // Delayed loads/divides/RoCC responses can cross a monitor entry. Their
+    // destination bank belongs to the issuing instruction, not the current mode.
+    val ll_shadow = RegInit(0.U(32.W))
+    when (wb_wen && wb_set_sboard) {
+      val mask = UIntToOH(wb_waddr, 32)
+      ll_shadow := Mux(ssa_trap_mode, ll_shadow | mask, ll_shadow & ~mask)
+    }
+    val write_shadow = Mux(ll_wen, ll_shadow(ll_waddr), ssa_trap_mode)
+    val rf_waddr_actual = Mux(rf_waddr === 0.U, 0.U,
+      Mux(write_shadow, rf_waddr | 32.U, rf_waddr))
     when (rf_wen) { rf.write(rf_waddr_actual, rf_wdata) }
 
     // hook up control/status regfile
@@ -911,14 +1024,14 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
         csr.io.csr_stall ||
         id_reg_pause ||
         io.traceStall
-    ctrl_killd := !ibuf.io.inst(0).valid || ibuf.io.inst(0).bits.replay || take_pc_mem_wb || ctrl_stalld || csr.io.interrupt
+    ctrl_killd := !id_valid_actual || Mux(ssa_trap_mode, false.B, ibuf.io.inst(0).bits.replay) || take_pc_mem_wb || ctrl_stalld || core_interrupt
 
-    io.imem.req.valid := take_pc
+    io.imem.req.valid := take_pc && (!ssa_trap_mode || exit_ssa) && !enter_ssa
     io.imem.req.bits.speculative := !take_pc_wb
     io.imem.req.bits.pc :=
-      Mux(wb_xcpt || csr.io.eret, csr.io.evec, // exception or [m|s]ret
+      Mux(exit_ssa, ssa_arg_callee, Mux(wb_xcpt || csr.io.eret, csr.io.evec, // exception or [m|s]ret
         Mux(replay_wb,              wb_reg_pc,   // replay
-          mem_npc))    // flush or branch misprediction
+          mem_npc)))    // flush or branch misprediction
     io.imem.flush_icache := wb_reg_valid && wb_ctrl.fence_i && !io.dmem.s2_nack
     io.imem.might_request := {
       imem_might_request_reg := ex_pc_valid || mem_pc_valid || io.ptw.customCSRs.disableICacheClockGate
@@ -936,7 +1049,7 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
 
     ibuf.io.inst(0).ready := Mux(ssa_trap_mode, false.B, !ctrl_stalld)
 
-    io.imem.btb_update.valid := mem_reg_valid && !take_pc_wb && mem_wrong_npc && (!mem_cfi || mem_cfi_taken)
+    io.imem.btb_update.valid := !ssa_trap_mode && !enter_ssa && mem_reg_valid && !take_pc_wb && mem_wrong_npc && (!mem_cfi || mem_cfi_taken)
     io.imem.btb_update.bits.isValid := mem_cfi
     io.imem.btb_update.bits.cfiType :=
       Mux((mem_ctrl.jal || mem_ctrl.jalr) && mem_waddr(0), CFIType.call,
@@ -948,7 +1061,7 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
     io.imem.btb_update.bits.pc := ~(~io.imem.btb_update.bits.br_pc | (coreInstBytes*fetchWidth-1))
     io.imem.btb_update.bits.prediction := mem_reg_btb_resp
 
-    io.imem.bht_update.valid := mem_reg_valid && !take_pc_wb
+    io.imem.bht_update.valid := !ssa_trap_mode && !enter_ssa && mem_reg_valid && !take_pc_wb
     io.imem.bht_update.bits.pc := io.imem.btb_update.bits.pc
     io.imem.bht_update.bits.taken := mem_br_taken
     io.imem.bht_update.bits.mispredict := mem_wrong_npc
@@ -1103,34 +1216,61 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
       docstring = "Kill the emulation after INT rdtime cycles. Off if 0."
     )(csr.io.time)
 
-    //=====================================================
+    // =====================================================
 
-    //[3] SSA-HPM Micro-code Trap Engine
+    // SSA-HPM: retire-triggered calls/returns and serialized SCCodeTable execution.
 
-    val is_call_wb = wb_valid && ssa_enable && wb_ctrl.jal && (wb_waddr === 1.U)
-    val is_ret_wb  = wb_valid && ssa_enable && wb_ctrl.jalr
-    val enter_ssa = (is_call_wb || is_ret_wb) && !ssa_trap_mode
+    val is_call_wb = wb_valid && ssa_enable && (wb_ctrl.jal || wb_ctrl.jalr) && (wb_waddr === 1.U || wb_waddr === 5.U) && (sc_base_addr =/= 0.U)
+    val is_ret_wb  = wb_valid && ssa_enable && wb_ctrl.jalr && (wb_waddr === 0.U) && (wb_reg_inst(19,15) === 1.U || wb_reg_inst(19,15) === 5.U) && wb_reg_inst(31,20) === 0.U && (sc_base_addr =/= 0.U)
 
-    val exit_ssa = ssa_trap_mode && wb_valid && wb_ctrl.jalr && (wb_reg_inst === "h00008067".U)
+    val wb_target_pc = RegEnable(mem_npc, mem_pc_valid)
+
+    val ssa_rom_limit = (ssa_rom_data.length - 1).U
+    val normal_exit = ssa_trap_mode && wb_valid && wb_reg_inst === "h00060067".U
+    enter_ssa := (is_call_wb || is_ret_wb) && !ssa_trap_mode
+    exit_ssa := normal_exit
 
     when (enter_ssa) {
       ssa_trap_mode := true.B
       ssa_pc := 0.U
+      ssa_busy := false.B
+      ssa_load_pending := false.B
       ssa_arg_is_call := is_call_wb
-      ssa_arg_callee := wb_jump_target
-      printf("[SSA-HPM] Entering Trap! PC hijacked to SCCodeTable.\n")
+      ssa_arg_callee := wb_target_pc
+      ssa_x10_written := false.B
+      ssa_x11_written := false.B
+      ssa_x12_written := false.B
     } .elsewhen (exit_ssa) {
       ssa_trap_mode := false.B
-      printf("[SSA-HPM] Exiting Trap! Resuming user program.\n")
-    }
-
-    val ssa_pc_advance = ssa_trap_mode && !ctrl_stalld
-    when (ssa_trap_mode) {
-      when (mem_reg_valid && !mem_reg_xcpt && mem_misprediction) {
-        ssa_pc := ((mem_npc - ssa_base_pc) >> 2.U).asUInt
-      } .elsewhen (ssa_pc_advance) {
-        ssa_pc := ssa_pc + 1.U
+      ssa_busy := false.B
+    } .elsewhen (ssa_trap_mode) {
+      when (!ctrl_killd) { ssa_busy := true.B }
+      // A cache miss can retire before its delayed writeback. Keep the shadow
+      // bank selected until that response arrives, and do not issue a new op.
+      when (wb_valid && wb_ctrl.mem && wb_ctrl.wxd && wb_dcache_miss) {
+        ssa_load_pending := true.B
+        ssa_load_rd := wb_waddr
       }
+      when (wb_valid) {
+        ssa_pc := ((wb_target_pc - ssa_base_pc) >> 2).asUInt
+        when (!(wb_ctrl.mem && wb_ctrl.wxd && wb_dcache_miss)) {
+          ssa_busy := false.B
+        }
+      } .elsewhen (ssa_load_pending && ll_wen && ll_shadow(ll_waddr) && ll_waddr === ssa_load_rd) {
+        ssa_load_pending := false.B
+        ssa_busy := false.B
+      } .elsewhen (take_pc_wb && wb_pc_valid) {
+        // Replay the actual instruction PC, never a stall-shifted sideband.
+        ssa_pc := ((wb_reg_pc - ssa_base_pc) >> 2).asUInt
+        ssa_busy := false.B
+      }
+      assert(ssa_pc <= ssa_rom_limit, "SSA microcode PC outside SCCodeTable")
+      assert(!wb_xcpt, "SSA microcode memory/CSR exception")
+    }
+    when (ssa_trap_mode && wb_wen) {
+      when (wb_waddr === 10.U) { ssa_x10_written := true.B }
+      when (wb_waddr === 11.U) { ssa_x11_written := true.B }
+      when (wb_waddr === 12.U) { ssa_x12_written := true.B }
     }
 
     //=====================================================
