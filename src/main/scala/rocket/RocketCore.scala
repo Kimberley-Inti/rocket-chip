@@ -405,7 +405,9 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
 
     val ssa_target_pc = ssa_base_pc + (ssa_pc << 2.U).asUInt
 
-    val id_pc_actual = Mux(ssa_trap_mode, ssa_target_pc, ibuf.io.pc).asUInt
+    // Keep the architectural compressed-VA width: widening the ROM mux to xLen
+    // zero-extends a negative Sv39 PC and breaks AUIPC after Linux relocation.
+    val id_pc_actual = Mux(ssa_trap_mode, ssa_target_pc(vaddrBitsExtended-1, 0), ibuf.io.pc).asUInt
 
     val id_valid_actual = Mux(ssa_trap_mode, !ssa_busy, ibuf.io.inst(0).valid)
 
@@ -717,7 +719,8 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
         Mux(mem_ctrl.jal, ImmGen(IMM_UJ, mem_reg_inst),
           Mux(mem_reg_rvc, SInt(2), SInt(4))))
     val mem_npc_base = (Mux(mem_ctrl.jalr || mem_reg_sfence, encodeVirtualAddress(mem_reg_wdata, mem_reg_wdata).asSInt, mem_br_target) & SInt(-2)).asUInt
-    val mem_npc = Mux(ssa_trap_mode && mem_reg_inst === "h00060067".U, ssa_arg_callee, mem_npc_base)
+    val mem_npc = Mux(ssa_trap_mode && mem_reg_inst === "h00060067".U,
+      ssa_arg_callee(vaddrBitsExtended-1, 0), mem_npc_base)
     val mem_wrong_npc =
       Mux(ex_pc_valid, mem_npc =/= ex_reg_pc,
         Mux(ibuf.io.inst(0).valid || ibuf.io.imem.valid, mem_npc =/= ibuf.io.pc, Bool(true)))
