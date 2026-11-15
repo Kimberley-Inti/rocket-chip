@@ -1,3 +1,16 @@
+# SSA-HPM — Original Development Archive
+
+This repository preserves the original Rocket Chip implementation and its development history for SSA-HPM.
+
+**Maintained project, documentation, source browser, report and releases:**
+[Kimberley-Inti/ssa_hpm](https://github.com/Kimberley-Inti/ssa_hpm).
+
+This archive is read-only. Original commits, authors and dates are retained.
+Current reproduction uses fixed public upstream baselines and the ordered patches
+in the maintained project. The original repository documentation follows below.
+
+---
+
 Rocket Chip Generator :rocket: ![Build Status](https://github.com/chipsalliance/rocket-chip/workflows/Continuous%20Integration/badge.svg?branch=master)
 =====================
 
